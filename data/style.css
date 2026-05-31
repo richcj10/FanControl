@@ -131,9 +131,49 @@ h1 {
   font-size: 0.7rem;
 }
 
+.temp-chip {
+  color: var(--warning);
+  font-size: 0.7rem;
+  font-family: var(--mono);
+}
+
 .ts {
   font-size: 0.65rem;
   color: var(--text-dim);
+}
+
+/* ============================================================
+   Tab navigation
+   ============================================================ */
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 10px 24px 0;
+  background: rgba(8, 12, 20, 0.82);
+  border-bottom: 1px solid var(--border);
+}
+
+.tab-btn {
+  padding: 8px 22px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color var(--transition), border-color var(--transition);
+  margin-bottom: -1px;
+}
+
+.tab-btn:hover { color: var(--text); }
+
+.tab-btn.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
 }
 
 /* ============================================================
@@ -203,6 +243,11 @@ main {
 .fan-card.alarm {
   border-color: var(--danger);
   box-shadow: 0 0 28px rgba(255,68,68,0.14), inset 0 0 40px rgba(255,68,68,0.04);
+}
+
+.fan-card.disabled-fan {
+  opacity: 0.38;
+  filter: saturate(0);
 }
 .fan-card.alarm::after {
   background: linear-gradient(90deg, transparent, var(--danger), transparent);
@@ -486,11 +531,20 @@ input[type="range"]::-webkit-slider-thumb:hover {
    ============================================================ */
 .config-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
   gap: 12px;
 }
 
-@media (max-width: 820px) { .config-grid { grid-template-columns: 1fr; } }
+.config-grid--2 {
+  grid-template-columns: 1fr 1fr;
+}
+
+.panel--wide {
+  width: 100%;
+}
+
+@media (max-width: 820px) {
+  .config-grid--2 { grid-template-columns: 1fr; }
+}
 
 .panel {
   background: var(--surface);
@@ -603,6 +657,80 @@ h2 {
 
 .btn--primary:active { transform: translateY(0); }
 
+.btn--secondary {
+  background: var(--surface3);
+  color: var(--accent);
+  border: 1px solid var(--border-hi);
+  box-shadow: none;
+}
+
+.btn--secondary:hover {
+  background: rgba(0,212,255,0.1);
+  border-color: var(--accent);
+}
+
+.btn--danger {
+  background: linear-gradient(135deg, #7a0000 0%, #cc2200 100%);
+  color: #fff;
+  box-shadow: 0 4px 16px rgba(200,40,40,0.3);
+}
+
+.btn--danger:hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+/* Toggle switch */
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.toggle {
+  position: relative;
+  display: inline-block;
+  width: 40px;
+  height: 22px;
+  flex-shrink: 0;
+}
+
+.toggle input { opacity: 0; width: 0; height: 0; }
+
+.slider {
+  position: absolute;
+  inset: 0;
+  background: var(--surface3);
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.slider::before {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 14px;
+  height: 14px;
+  background: var(--text-muted);
+  border-radius: 50%;
+  transition: transform var(--transition), background var(--transition);
+}
+
+.toggle input:checked + .slider {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+}
+
+.toggle input:checked + .slider::before {
+  transform: translate(18px, -50%);
+  background: var(--accent);
+  box-shadow: 0 0 8px rgba(0,212,255,0.6);
+}
+
 /* Flash message */
 .flash-msg {
   font-family: var(--mono);
@@ -660,6 +788,21 @@ h2 {
 }
 
 .alarm-tbl input:focus { border-color: var(--accent); }
+
+.def-select {
+  width: 100%;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  padding: 5px 8px;
+  outline: none;
+  cursor: pointer;
+}
+
+.def-select:focus { border-color: var(--accent); }
 
 /* ============================================================
    Scrollbar

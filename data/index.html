@@ -22,53 +22,140 @@
       <span id="connLabel">Connecting&hellip;</span>
     </div>
     <span class="ip-chip" id="ipChip"></span>
+    <div class="conn-badge" id="mqttBadge">
+      <span class="led" id="mqttLed"></span>
+      <span id="mqttLabel">MQTT</span>
+    </div>
+    <span class="temp-chip" id="espTemp" title="ESP32 die temperature"></span>
     <span class="ts" id="lastUpdate"></span>
   </div>
 </header>
 
+<nav class="tabs">
+  <button class="tab-btn active" id="tab-btn-dashboard" onclick="switchTab('dashboard')">Dashboard</button>
+  <button class="tab-btn"        id="tab-btn-settings"  onclick="switchTab('settings')">Settings</button>
+</nav>
+
 <main>
-  <div class="section-label">Fan Status &amp; Control</div>
-  <div class="fan-grid" id="fanGrid"></div>
 
-  <div class="section-label" style="margin-top:10px">Configuration</div>
-  <div class="config-grid">
+  <!-- ===================== DASHBOARD ===================== -->
+  <div id="tab-dashboard" class="tab-pane active">
+    <div class="fan-grid" id="fanGrid"></div>
+  </div>
 
-    <div class="panel">
-      <div class="panel-hdr">
-        <h2>MQTT Settings</h2>
-        <span class="panel-hint">Home Assistant / Mosquitto</span>
+  <!-- ===================== SETTINGS ===================== -->
+  <div id="tab-settings" class="tab-pane" style="display:none">
+
+    <div class="section-label">General</div>
+    <div class="config-grid config-grid--2">
+      <div class="panel">
+        <div class="panel-hdr">
+          <h2>General</h2>
+          <span class="panel-hint">Reboot required after change</span>
+        </div>
+        <div class="form-row"><label>Hostname <span class="panel-hint">(alphanumeric + hyphen)</span></label><input id="hostname" type="text" placeholder="fancontrol" autocomplete="off" spellcheck="false"></div>
+        <div class="action-row">
+          <button class="btn btn--primary" onclick="saveGeneral()">Save &amp; Reboot</button>
+          <span class="flash-msg" id="generalMsg"></span>
+        </div>
       </div>
-      <div class="form-row"><label>Broker Host</label><input id="mqttHost" type="text" placeholder="192.168.1.x" autocomplete="off"></div>
-      <div class="form-row"><label>Port</label><input id="mqttPort" type="number" value="1883" min="1" max="65535"></div>
-      <div class="form-row form-row--half">
-        <div><label>Username</label><input id="mqttUser" type="text" placeholder="optional"></div>
-        <div><label>Password</label><input id="mqttPass" type="password" placeholder="optional"></div>
-      </div>
-      <div class="form-row"><label>Topic Prefix</label><input id="mqttPrefix" type="text" placeholder="fancontrol"></div>
-      <div class="action-row">
-        <button class="btn btn--primary" onclick="saveMqtt()">Save &amp; Reconnect</button>
-        <span class="flash-msg" id="mqttMsg"></span>
+
+      <div class="panel">
+        <div class="panel-hdr">
+          <h2>OTA / System</h2>
+          <span class="panel-hint">Reboot required after changes</span>
+        </div>
+        <div class="form-row toggle-row">
+          <label>Web OTA <span class="panel-hint">(/update page)</span></label>
+          <label class="toggle"><input type="checkbox" id="otaWeb"><span class="slider"></span></label>
+        </div>
+        <div class="form-row toggle-row">
+          <label>Arduino OTA <span class="panel-hint">(PlatformIO push)</span></label>
+          <label class="toggle"><input type="checkbox" id="otaArduino"><span class="slider"></span></label>
+        </div>
+        <div class="form-row">
+          <label>OTA Password <span class="panel-hint">(blank = no auth)</span></label>
+          <input id="otaPass" type="password" placeholder="leave blank to clear">
+        </div>
+        <div class="action-row" style="margin-top:4px">
+          <button class="btn btn--primary" onclick="saveOta()">Save OTA Settings</button>
+          <button class="btn btn--danger"  onclick="rebootDevice()">Reboot</button>
+          <span class="flash-msg" id="otaMsg"></span>
+        </div>
       </div>
     </div>
 
-    <div class="panel">
+    <div class="section-label" style="margin-top:18px">MQTT &amp; Alarms</div>
+    <div class="config-grid config-grid--2">
+      <div class="panel">
+        <div class="panel-hdr">
+          <h2>MQTT Settings</h2>
+          <span class="panel-hint">Home Assistant / Mosquitto</span>
+        </div>
+        <div class="form-row"><label>Broker Host</label><input id="mqttHost" type="text" placeholder="192.168.1.x" autocomplete="off"></div>
+        <div class="form-row"><label>Port</label><input id="mqttPort" type="number" value="1883" min="1" max="65535"></div>
+        <div class="form-row form-row--half">
+          <div><label>Username</label><input id="mqttUser" type="text" placeholder="optional"></div>
+          <div><label>Password</label><input id="mqttPass" type="password" placeholder="optional"></div>
+        </div>
+        <div class="form-row"><label>Topic Prefix</label><input id="mqttPrefix" type="text" placeholder="fancontrol"></div>
+        <div class="action-row">
+          <button class="btn btn--primary" onclick="saveMqtt()">Save &amp; Reconnect</button>
+          <span class="flash-msg" id="mqttMsg"></span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-hdr">
+          <h2>Alarm Thresholds</h2>
+          <span class="panel-hint">0 = disabled</span>
+        </div>
+        <table class="alarm-tbl">
+          <thead>
+            <tr><th>Fan</th><th>Min RPM</th><th>Max RPM</th></tr>
+          </thead>
+          <tbody id="alarmBody"></tbody>
+        </table>
+        <div class="action-row" style="margin-top:14px">
+          <button class="btn btn--primary" onclick="saveAlarms()">Save Alarms</button>
+          <span class="flash-msg" id="alarmMsg"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-label" style="margin-top:18px">Fan Boot Defaults</div>
+    <div class="panel panel--wide">
       <div class="panel-hdr">
-        <h2>Alarm Thresholds</h2>
-        <span class="panel-hint">0 = disabled</span>
+        <h2>Fan Boot Defaults</h2>
+        <span class="panel-hint">Applied on every power-on</span>
       </div>
       <table class="alarm-tbl">
         <thead>
-          <tr><th>Fan</th><th>Min RPM</th><th>Max RPM</th></tr>
+          <tr>
+            <th>Fan</th>
+            <th>Mode</th>
+            <th>PWM (0–255)</th>
+            <th>Target RPM</th>
+            <th title="EMC2305 MIN_DRIVE register — stall floor (0=chip default)">Min Drive</th>
+            <th title="Tach pulses per revolution — divide RPM if > 1">PPR</th>
+            <th title="Spin-up kick strength">Spin-up</th>
+          </tr>
         </thead>
-        <tbody id="alarmBody"></tbody>
+        <tbody id="defaultsBody"></tbody>
       </table>
       <div class="action-row" style="margin-top:14px">
-        <button class="btn btn--primary" onclick="saveAlarms()">Save Alarms</button>
-        <span class="flash-msg" id="alarmMsg"></span>
+        <button class="btn btn--primary" onclick="saveFanDefaults()">Save Defaults</button>
+        <label class="btn btn--secondary" title="Restore from a settings.json backup">
+          Restore
+          <input type="file" id="defaultsFile" accept=".json" style="display:none" onchange="uploadFanDefaults(this)">
+        </label>
+        <button class="btn btn--secondary" onclick="downloadFanDefaults()">Backup</button>
+        <span class="flash-msg" id="defaultsMsg"></span>
       </div>
     </div>
 
-  </div>
+  </div><!-- /tab-settings -->
+
 </main>
 
 <script src="/app.js"></script>

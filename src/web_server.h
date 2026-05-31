@@ -1,21 +1,28 @@
 /**
  * @file web_server.h
- * @brief AsyncWebServer setup and REST API declaration.
+ * @brief AsyncWebServer setup, REST API, and web OTA declaration.
  *
- * Call @ref webServerSetup() once during setup() after LittleFS has been
- * mounted.  The function registers all REST API routes and then adds the
- * LittleFS static-file catch-all, so API paths always take priority.
+ * Call @ref webServerSetup() once during @c setup() after LittleFS has been
+ * mounted and @ref configLoad() has run.  API routes are registered before the
+ * LittleFS static-file catch-all so /api/* paths always take priority.
  *
- * ## REST API summary
- * | Method | Path                  | Body / Response                          |
- * |--------|-----------------------|------------------------------------------|
- * | GET    | /api/status           | JSON: IP, array of fan states            |
- * | GET    | /api/config           | JSON: MQTT settings + alarm thresholds   |
- * | POST   | /api/fan/pwm          | `{"fan":N,"pwm":0-255}`                  |
- * | POST   | /api/fan/mode         | `{"fan":N,"mode":"pwm"\|"rpm"}`          |
- * | POST   | /api/fan/target       | `{"fan":N,"rpm":NNNN}`                   |
- * | POST   | /api/config/mqtt      | MQTT credential fields                   |
- * | POST   | /api/config/alarms    | `{"alarms":[{"minRpm":N,"maxRpm":N}…]}`  |
+ * ## REST API
+ * | Method | Path                    | Body / Response                                         |
+ * |--------|-------------------------|---------------------------------------------------------|
+ * | GET    | /api/status             | `{ip, mqttOnline, espTempC, fans[{rpm,pwm,disabled,…}]}`|
+ * | GET    | /api/config             | `{hostname, mqttHost, …, otaWebEnabled, alarms[]}`      |
+ * | POST   | /api/config/general     | `{"hostname":"…"}` — reboot to apply                   |
+ * | POST   | /api/config/mqtt        | MQTT broker credentials + prefix                        |
+ * | POST   | /api/config/alarms      | `{"alarms":[{"minRpm":N,"maxRpm":N}…]}`                 |
+ * | POST   | /api/config/ota         | `{otaWebEnabled, otaArduinoEnabled, otaPassword}`        |
+ * | GET    | /api/fan/defaults       | Per-fan boot defaults (pwm, mode, minDrive, …)          |
+ * | POST   | /api/fan/defaults       | Update + persist fan boot defaults                      |
+ * | POST   | /api/settings/upload    | Full settings.json body — merges all known keys         |
+ * | GET    | /api/reboot             | —                                                       |
+ * | POST   | /api/reboot             | Reboot the ESP32                                        |
+ * | GET    | /update                 | OTA firmware upload page (only if otaWebEnabled)        |
+ * | POST   | /update                 | OTA firmware flash (multipart/form-data)                |
+ * | GET    | /                       | Serves LittleFS static files (index.html, app.js, …)   |
  */
 
 #pragma once
@@ -24,10 +31,13 @@
 /**
  * @brief Register all HTTP routes and start the web server.
  *
- * Must be called after LittleFS.begin() and after ETH has been initialised
- * (though the server can start before Ethernet is fully up — requests will
- * simply not arrive until a link is established).
+ * Must be called after LittleFS.begin() and configLoad().  The server
+ * can start before Ethernet is fully up; requests will simply not arrive
+ * until a link is established.
  *
- * @param server Reference to an AsyncWebServer instance (created in main.cpp).
+ * @param server Reference to the AsyncWebServer instance (port 80, created in main.cpp).
  */
 void webServerSetup(AsyncWebServer &server);
+
+/** @brief Call from loop() — reserved for future per-loop web server tasks. */
+void webServerLoop();

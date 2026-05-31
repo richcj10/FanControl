@@ -4,13 +4,12 @@
 // Constants
 // ----------------------------------------------------------------
 const NUM_FANS  = 5;
-const MAX_RPM   = 3000;    // full-scale RPM on gauge
+const MAX_RPM   = 3000;
 const POLL_MS   = 2000;
 
-// Gauge geometry (matches SVG viewBox "0 0 110 110", cx=55 cy=55)
 const G_R     = 46;
-const G_CIRC  = 2 * Math.PI * G_R;   // ~289.03
-const G_ARC   = G_CIRC * 0.75;       // 270° sweep  ~216.77
+const G_CIRC  = 2 * Math.PI * G_R;
+const G_ARC   = G_CIRC * 0.75;
 
 // ----------------------------------------------------------------
 // State
@@ -21,21 +20,57 @@ let errStreak = 0;
 // Build initial DOM
 // ----------------------------------------------------------------
 function buildUI() {
-  const grid = document.getElementById('fanGrid');
+  const grid  = document.getElementById('fanGrid');
   const tbody = document.getElementById('alarmBody');
+  const dtbody = document.getElementById('defaultsBody');
 
   for (let n = 1; n <= NUM_FANS; n++) {
     grid.insertAdjacentHTML('beforeend', fanCardHTML(n));
+
     tbody.insertAdjacentHTML('beforeend', `
       <tr>
         <td>Fan ${n}</td>
         <td><input type="number" id="mn${n}" value="0" min="0" max="9999"></td>
         <td><input type="number" id="mx${n}" value="0" min="0" max="9999"></td>
       </tr>`);
+
+    dtbody.insertAdjacentHTML('beforeend', `
+      <tr>
+        <td>Fan ${n}</td>
+        <td>
+          <select id="dm${n}" class="def-select" onchange="toggleDefaultRpm(${n})">
+            <option value="pwm">PWM</option>
+            <option value="rpm">RPM</option>
+            <option value="off">Off</option>
+          </select>
+        </td>
+        <td><input type="number" id="dp${n}" value="64"   min="0"   max="255"  title="PWM duty 0-255"></td>
+        <td><input type="number" id="dr${n}" value="1200" min="200" max="9999" title="Target RPM for closed-loop mode"></td>
+        <td><input type="number" id="dmin${n}" value="0"  min="0"   max="255"  title="EMC2305 MIN_DRIVE register — stall floor (0 = chip default)"></td>
+        <td><input type="number" id="dppr${n}" value="1"  min="1"   max="4"    title="Tach pulses per revolution"></td>
+        <td>
+          <select id="dsp${n}" class="def-select" title="Spin-up kick: Soft = chip default, Hard = 65% drive extended">
+            <option value="soft">Soft</option>
+            <option value="hard">Hard</option>
+          </select>
+        </td>
+      </tr>`);
   }
 
-  // Initialise gauges to zero
-  for (let n = 1; n <= NUM_FANS; n++) setGauge(n, 0);
+  for (let n = 1; n <= NUM_FANS; n++) {
+    setGauge(n, 0);
+    toggleDefaultRpm(n);
+  }
+}
+
+function toggleDefaultRpm(n) {
+  const mode = document.getElementById('dm' + n).value;
+  const off  = (mode === 'off');
+  document.getElementById('dp'   + n).disabled = off || mode === 'rpm';
+  document.getElementById('dr'   + n).disabled = off || mode === 'pwm';
+  document.getElementById('dmin' + n).disabled = off;
+  document.getElementById('dppr' + n).disabled = off;
+  document.getElementById('dsp'  + n).disabled = off;
 }
 
 function fanCardHTML(n) {
@@ -118,8 +153,6 @@ function setGauge(n, rpm) {
 
   const valEl = document.getElementById('grpm' + n);
   if (valEl) valEl.textContent = rpm > 0 ? rpm : '0';
-
-  // Colour the RPM number too when hot
   if (valEl) valEl.style.color = pct > 0.79 ? '#ff4444' : '';
 }
 
@@ -151,18 +184,33 @@ function applyStatus(data) {
   errStreak = 0;
   setConnState(true, data.ip);
 
+  // ESP32 die temperature
+  const tempEl = document.getElementById('espTemp');
+  if (tempEl && data.espTempC !== undefined) {
+    tempEl.textContent = data.espTempC.toFixed(1) + '°C';
+    tempEl.title = `ESP32 die: ${data.espTempC.toFixed(1)}°C`;
+  }
+
+  // MQTT status badge
+  const mqttLed   = document.getElementById('mqttLed');
+  const mqttBadge = document.getElementById('mqttBadge');
+  const mqttLabel = document.getElementById('mqttLabel');
+  if (mqttLed) {
+    const on = !!data.mqttOnline;
+    mqttLed.className   = 'led ' + (on ? 'ok' : 'err');
+    mqttBadge.className = 'conn-badge ' + (on ? 'online' : 'offline');
+    mqttLabel.textContent = 'MQTT';
+  }
+
   data.fans.forEach((f, i) => {
     const n = i + 1;
 
-    // Gauge + RPM
     setGauge(n, f.rpm);
 
-    // PWM bar
     const pct = Math.round(f.pwm / 2.55);
     document.getElementById('gpwm' + n).textContent = `${pct}%  (${f.pwm})`;
     document.getElementById('pf'   + n).style.width = pct + '%';
 
-    // Alarm tags
     const tags = [];
     if (f.stall)     tags.push('Stall');
     if (f.spinFail)  tags.push('Spin Fail');
@@ -176,7 +224,8 @@ function applyStatus(data) {
     const hasAlarm = tags.length > 0;
     const card  = document.getElementById('fc'    + n);
     const badge = document.getElementById('badge' + n);
-    card.classList.toggle('alarm', hasAlarm);
+    card.classList.toggle('alarm',        hasAlarm);
+    card.classList.toggle('disabled-fan', !!f.disabled);
 
     if (hasAlarm) {
       badge.textContent = 'ALARM';
@@ -219,12 +268,13 @@ function poll() {
 }
 
 // ----------------------------------------------------------------
-// Config load / save
+// Config load / save — MQTT + Alarms
 // ----------------------------------------------------------------
 function loadConfig() {
   fetch('/api/config')
     .then(r => r.json())
     .then(d => {
+      document.getElementById('hostname').value    = d.hostname   ?? 'fancontrol';
       document.getElementById('mqttHost').value   = d.mqttHost   ?? '';
       document.getElementById('mqttPort').value   = d.mqttPort   ?? 1883;
       document.getElementById('mqttUser').value   = d.mqttUser   ?? '';
@@ -236,6 +286,9 @@ function loadConfig() {
           document.getElementById('mx' + n).value = a.maxRpm ?? 0;
         });
       }
+      // OTA flags
+      if (d.otaWebEnabled    !== undefined) document.getElementById('otaWeb').checked     = d.otaWebEnabled;
+      if (d.otaArduinoEnabled !== undefined) document.getElementById('otaArduino').checked = d.otaArduinoEnabled;
     })
     .catch(() => {});
 }
@@ -263,6 +316,109 @@ function saveAlarms() {
 }
 
 // ----------------------------------------------------------------
+// Fan defaults
+// ----------------------------------------------------------------
+function loadFanDefaults() {
+  fetch('/api/fan/defaults')
+    .then(r => r.json())
+    .then(d => {
+      if (!Array.isArray(d.fans)) return;
+      d.fans.forEach((f, i) => {
+        const n = i + 1;
+        document.getElementById('dm'   + n).value = f.mode          ?? 'pwm';
+        document.getElementById('dp'   + n).value = f.pwm           ?? 64;
+        document.getElementById('dr'   + n).value = f.targetRpm     ?? 1200;
+        document.getElementById('dmin' + n).value = f.minDrive      ?? 0;
+        document.getElementById('dppr' + n).value = f.pulsesPerRev  ?? 1;
+        document.getElementById('dsp'  + n).value = f.hardSpinup    ? 'hard' : 'soft';
+        toggleDefaultRpm(n);
+      });
+    })
+    .catch(() => {});
+}
+
+function saveFanDefaults() {
+  const fans = [];
+  for (let n = 1; n <= NUM_FANS; n++) {
+    fans.push({
+      mode:         document.getElementById('dm'   + n).value,
+      pwm:          parseInt(document.getElementById('dp'   + n).value, 10) || 64,
+      targetRpm:    parseInt(document.getElementById('dr'   + n).value, 10) || 1200,
+      minDrive:     parseInt(document.getElementById('dmin' + n).value, 10) || 0,
+      pulsesPerRev: parseInt(document.getElementById('dppr' + n).value, 10) || 1,
+      hardSpinup:   document.getElementById('dsp' + n).value === 'hard',
+    });
+  }
+  post('/api/fan/defaults', { fans })
+    .then(d => flash('defaultsMsg', d.ok ? '✓ Saved' : '✗ Error'));
+}
+
+function uploadFanDefaults(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    let parsed;
+    try { parsed = JSON.parse(e.target.result); } catch { flash('defaultsMsg', '✗ Invalid JSON'); return; }
+    // Full settings.json upload goes to /api/settings/upload;
+    // a fans-only payload falls back to /api/fan/defaults.
+    const url = parsed.fans && Object.keys(parsed).length > 1
+      ? '/api/settings/upload'
+      : '/api/fan/defaults';
+    post(url, parsed)
+      .then(d => {
+        flash('defaultsMsg', d.ok ? '✓ Uploaded' : '✗ Error');
+        if (d.ok) { loadConfig(); loadFanDefaults(); }
+      });
+  };
+  reader.readAsText(file);
+  input.value = '';
+}
+
+function downloadFanDefaults() {
+  // Download the full settings.json directly from LittleFS.
+  const a = document.createElement('a');
+  a.href = '/settings.json';
+  a.download = 'settings.json';
+  a.click();
+}
+
+// ----------------------------------------------------------------
+// General settings
+// ----------------------------------------------------------------
+function saveGeneral() {
+  const hostname = document.getElementById('hostname').value.trim().replace(/[^a-zA-Z0-9-]/g, '-') || 'fancontrol';
+  post('/api/config/general', { hostname })
+    .then(d => {
+      if (d.ok) {
+        flash('generalMsg', '✓ Saved — rebooting…');
+        setTimeout(() => post('/api/reboot', {}), 800);
+      } else {
+        flash('generalMsg', '✗ Error');
+      }
+    });
+}
+
+// ----------------------------------------------------------------
+// OTA settings
+// ----------------------------------------------------------------
+function saveOta() {
+  const body = {
+    otaWebEnabled:     document.getElementById('otaWeb').checked,
+    otaArduinoEnabled: document.getElementById('otaArduino').checked,
+    otaPassword:       document.getElementById('otaPass').value,
+  };
+  post('/api/config/ota', body)
+    .then(d => flash('otaMsg', d.ok ? '✓ Saved — reboot to apply' : '✗ Error'));
+}
+
+function rebootDevice() {
+  if (!confirm('Reboot the fan controller?')) return;
+  post('/api/reboot', {}).catch(() => {});
+  flash('otaMsg', 'Rebooting…');
+}
+
+// ----------------------------------------------------------------
 // Helpers
 // ----------------------------------------------------------------
 function post(url, body) {
@@ -284,9 +440,20 @@ function flash(id, msg) {
 }
 
 // ----------------------------------------------------------------
+// Tab switching
+// ----------------------------------------------------------------
+function switchTab(name) {
+  ['dashboard', 'settings'].forEach(t => {
+    document.getElementById('tab-' + t).style.display      = (t === name) ? '' : 'none';
+    document.getElementById('tab-btn-' + t).classList.toggle('active', t === name);
+  });
+}
+
+// ----------------------------------------------------------------
 // Boot
 // ----------------------------------------------------------------
 buildUI();
 loadConfig();
+loadFanDefaults();
 poll();
 setInterval(poll, POLL_MS);

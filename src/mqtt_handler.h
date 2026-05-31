@@ -1,70 +1,46 @@
 /**
  * @file mqtt_handler.h
- * @brief MQTT publish interface for fan status and alarm events.
+ * @brief MQTT publish interface — status, alerts, HA auto-discovery, and fan commands.
  *
- * Uses PubSubClient over a WiFiClient, which on the ESP32 routes through
- * lwIP regardless of whether the active interface is Wi-Fi or Ethernet.
+ * Only fans not marked @c disabled in @ref FanDefault are published.
  *
- * ## Topic schema
- * All topics are prefixed with @ref AppConfig::mqttPrefix (default "fancontrol").
+ * ## Published topics  (all retained)
+ * | Topic                           | Payload            | Notes                     |
+ * |---------------------------------|--------------------|---------------------------|
+ * | `<prefix>/availability`         | `online`/`offline` | LWT; set offline on drop  |
+ * | `<prefix>/fanN/rpm`             | e.g. `"1200"`      | RPM integer string        |
+ * | `<prefix>/fanN/pwm`             | `"0"`–`"100"`      | Duty cycle as %           |
+ * | `<prefix>/fanN/alert`           | `ON` / `OFF`       | Any fault active          |
+ * | `<prefix>/temp`                 | e.g. `"45.2"`      | ESP32 die temp in °C      |
  *
- * | Topic                              | Payload           | Retained |
- * |------------------------------------|-------------------|----------|
- * | `<prefix>/fanN/status`             | JSON object       | No       |
- * | `<prefix>/fanN/alarm/stall`        | "1" or "0"        | Yes      |
- * | `<prefix>/fanN/alarm/spin_fail`    | "1" or "0"        | Yes      |
- * | `<prefix>/fanN/alarm/drive_fail`   | "1" or "0"        | Yes      |
+ * ## Subscribed topics  (incoming commands)
+ * | Topic                           | Payload            | Action                    |
+ * |---------------------------------|--------------------|---------------------------|
+ * | `<prefix>/+/set/pct`            | `"0"`–`"100"`      | Set fan speed %           |
+ * | `<prefix>/+/set/power`          | `ON` / `OFF`       | Fan on (restore default) or off |
  *
- * Alarm messages are published with the retained flag so Home Assistant
- * receives the last known state immediately on (re)subscription.
- *
- * @note Call @ref mqttSetup() once the Ethernet link is up and
- *       @ref g_config has been loaded.  Call @ref mqttLoop() every iteration
- *       of the Arduino loop() to maintain the connection and process
- *       incoming keepalives.
+ * ## HA auto-discovery  (retained, published on every connect)
+ * | Component       | Path                                     |
+ * |-----------------|------------------------------------------|
+ * | `sensor`        | `homeassistant/sensor/<host>/fanN_rpm`   |
+ * | `sensor`        | `homeassistant/sensor/<host>/fanN_pwm`   |
+ * | `binary_sensor` | `homeassistant/binary_sensor/<host>/fanN_alert` |
+ * | `fan`           | `homeassistant/fan/<host>/fanN`          |
+ * | `sensor`        | `homeassistant/sensor/<host>/esp_temp`   |
  */
 
 #pragma once
 #include <stdint.h>
 
-/**
- * @brief Configure the MQTT client from the current @ref g_config.
- *
- * Must be called after the Ethernet link is established and
- * @ref configLoad() has populated g_config.  Re-call this function
- * after saving new MQTT credentials to apply them.
- */
 void mqttSetup();
-
-/**
- * @brief Maintain the MQTT connection and process keepalives.
- *
- * Calls the PubSubClient loop (required for keepalive packets) and
- * attempts a reconnect if the client has disconnected.  Reconnect
- * attempts are rate-limited to once per 10 seconds to prevent
- * flooding the broker during an outage.
- *
- * Must be called from the main Arduino loop().
- */
 void mqttLoop();
+bool mqttConnected();
 
-/**
- * @brief Publish the current RPM, PWM, and alarm state for all fans.
- *
- * Serialises each @ref FanState to a JSON object and publishes it to
- * @c <prefix>/fanN/status.  No-op if the client is not connected.
- * Intended to be called on a fixed interval (every 5 s in main.cpp).
- */
+/** Publish rpm, pwm%, and alert state for all enabled fans + ESP32 temp. */
 void mqttPublishStatus();
 
-/**
- * @brief Publish a single alarm state change for one fan channel.
- *
- * Published with the MQTT retained flag so Home Assistant sees the
- * last state on reconnect.  No-op if the client is not connected.
- *
- * @param fanNum  Fan number, 1–5.
- * @param type    Alarm type string, e.g. "stall", "spin_fail", "drive_fail".
- * @param active  true if the alarm just activated, false if it cleared.
- */
-void mqttPublishAlarm(uint8_t fanNum, const char *type, bool active);
+/** Publish a single fan's generic alert state (any fault → ON). */
+void mqttPublishAlert(uint8_t fanNum, bool alert);
+
+/** Publish HA MQTT auto-discovery config for all enabled fans. */
+void mqttPublishDiscovery();
