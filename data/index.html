@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Fan Control</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="2.5"/>
+      <path d="M12 2c-1.5 0-3 .8-3.5 2.5-.4 1.3.1 2.7 1 3.5L8 10c-1.2.4-3.5 1.5-3.5 4.5 0 2 1.5 3.5 3.5 3.5l.5-2.5c.3-1.2 1.2-2 2-2s1.7.8 2 2l.5 2.5c2 0 3.5-1.5 3.5-3.5 0-3-2.3-4.1-3.5-4.5l-1.5-2c.9-.8 1.4-2.2 1-3.5C14.5 3 13.5 2 12 2z"/>
+    </svg>
+    <h1>Fan Control</h1>
+  </div>
+  <div class="header-right">
+    <div class="conn-badge" id="connBadge">
+      <span class="led" id="connLed"></span>
+      <span id="connLabel">Connecting&hellip;</span>
+    </div>
+    <span class="ip-chip" id="ipChip"></span>
+    <span class="ts" id="lastUpdate"></span>
+  </div>
+</header>
+
+<main>
+  <div class="section-label">Fan Status &amp; Control</div>
+  <div class="fan-grid" id="fanGrid"></div>
+
+  <div class="section-label" style="margin-top:10px">Configuration</div>
+  <div class="config-grid">
+
+    <div class="panel">
+      <div class="panel-hdr">
+        <h2>MQTT Settings</h2>
+        <span class="panel-hint">Home Assistant / Mosquitto</span>
+      </div>
+      <div class="form-row"><label>Broker Host</label><input id="mqttHost" type="text" placeholder="192.168.1.x" autocomplete="off"></div>
+      <div class="form-row"><label>Port</label><input id="mqttPort" type="number" value="1883" min="1" max="65535"></div>
+      <div class="form-row form-row--half">
+        <div><label>Username</label><input id="mqttUser" type="text" placeholder="optional"></div>
+        <div><label>Password</label><input id="mqttPass" type="password" placeholder="optional"></div>
+      </div>
+      <div class="form-row"><label>Topic Prefix</label><input id="mqttPrefix" type="text" placeholder="fancontrol"></div>
+      <div class="action-row">
+        <button class="btn btn--primary" onclick="saveMqtt()">Save &amp; Reconnect</button>
+        <span class="flash-msg" id="mqttMsg"></span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-hdr">
+        <h2>Alarm Thresholds</h2>
+        <span class="panel-hint">0 = disabled</span>
+      </div>
+      <table class="alarm-tbl">
+        <thead>
+          <tr><th>Fan</th><th>Min RPM</th><th>Max RPM</th></tr>
+        </thead>
+        <tbody id="alarmBody"></tbody>
+      </table>
+      <div class="action-row" style="margin-top:14px">
+        <button class="btn btn--primary" onclick="saveAlarms()">Save Alarms</button>
+        <span class="flash-msg" id="alarmMsg"></span>
+      </div>
+    </div>
+
+  </div>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

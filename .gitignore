@@ -1,0 +1,14 @@
+# PlatformIO build artifacts
+.pio/
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# Python cache (PlatformIO toolchain)
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
