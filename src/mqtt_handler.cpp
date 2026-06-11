@@ -21,6 +21,7 @@ static WiFiClient   ethClient;
 static PubSubClient mqtt(ethClient);
 static uint32_t     lastAttemptMs  = UINT32_MAX;
 static bool         wasConnected   = false;
+static bool         availPublished = false;
 
 // Human-readable PubSubClient state codes
 static const char* mqttStateStr(int s) {
@@ -160,7 +161,7 @@ static void mqttReconnect() {
     if (mqtt.connect(clientId, user, pass, lwt, 1, true, "offline")) {
         Serial.println("  Result  : CONNECTED OK");
         Serial.println("==========================================");
-        pub(lwt, "online", true);
+        availPublished = pub(lwt, "online", true);
         mqttSubscribeCommands();
         mqttPublishDiscovery();
     } else {
@@ -178,6 +179,7 @@ void mqttLoop() {
     if (wasConnected && !now) {
         Serial.printf("MQTT connection LOST: rc=%d — %s\n",
                       mqtt.state(), mqttStateStr(mqtt.state()));
+        availPublished = false;
     }
     wasConnected = now;
 
@@ -192,6 +194,13 @@ bool mqttConnected() { return mqtt.connected(); }
 // ----------------------------------------------------------------
 void mqttPublishStatus() {
     if (!mqtt.connected()) return;
+
+    // Republish availability if the initial post-connect publish failed
+    if (!availPublished) {
+        char avty[80];
+        snprintf(avty, sizeof(avty), "%s/availability", g_config.mqttPrefix);
+        availPublished = pub(avty, "online", true);
+    }
 
     char topic[80], payload[32];
 
@@ -215,6 +224,10 @@ void mqttPublishStatus() {
     snprintf(topic, sizeof(topic), "%s/temp", g_config.mqttPrefix);
     snprintf(payload, sizeof(payload), "%.1f", (float)temperatureRead());
     pub(topic, payload, true);
+
+    // EMC2305 chip health
+    snprintf(topic, sizeof(topic), "%s/emc2305", g_config.mqttPrefix);
+    pub(topic, g_emc2305Ok ? "OK" : "FAULT", true);
 }
 
 // ----------------------------------------------------------------
@@ -228,6 +241,16 @@ void mqttPublishAlert(uint8_t fanNum, bool alert) {
     char topic[80];
     snprintf(topic, sizeof(topic), "%s/fan%d/alert", g_config.mqttPrefix, fanNum);
     pub(topic, alert ? "ON" : "OFF", true);
+}
+
+// ----------------------------------------------------------------
+// EMC2305 chip-health publish — fires immediately on state change
+// ----------------------------------------------------------------
+void mqttPublishEmc2305(bool ok) {
+    if (!mqtt.connected()) return;
+    char topic[80];
+    snprintf(topic, sizeof(topic), "%s/emc2305", g_config.mqttPrefix);
+    pub(topic, ok ? "OK" : "FAULT", true);
 }
 
 // ----------------------------------------------------------------
@@ -359,6 +382,27 @@ void mqttPublishDiscovery() {
         addDevice(doc["dev"].to<JsonObject>());
         serializeJson(doc, payload, sizeof(payload));
         snprintf(discTopic, sizeof(discTopic), "homeassistant/sensor/%s/esp_temp/config", g_config.hostname);
+        pub(discTopic, payload, true);
+    }
+
+    // -- EMC2305 chip health binary sensor --
+    {
+        char uid[48], payload[600], discTopic[100], emcTopic[80];
+        snprintf(emcTopic, sizeof(emcTopic), "%s/emc2305", g_config.mqttPrefix);
+        makeUid(uid, sizeof(uid), "emc2305");
+
+        JsonDocument doc;
+        char name[48]; snprintf(name, sizeof(name), "%s EMC2305", g_config.hostname);
+        doc["name"]    = name;
+        doc["uniq_id"] = uid;
+        doc["avty_t"]  = avty;
+        doc["dev_cla"] = "problem";
+        doc["stat_t"]  = emcTopic;
+        doc["pl_on"]   = "FAULT";
+        doc["pl_off"]  = "OK";
+        addDevice(doc["dev"].to<JsonObject>());
+        serializeJson(doc, payload, sizeof(payload));
+        snprintf(discTopic, sizeof(discTopic), "homeassistant/binary_sensor/%s/emc2305/config", g_config.hostname);
         pub(discTopic, payload, true);
     }
 

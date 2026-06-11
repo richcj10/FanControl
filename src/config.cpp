@@ -26,7 +26,7 @@ static void applyDefaults() {
     g_config.otaArduinoEnabled  = true;
     g_config.otaPassword[0]     = '\0';
     for (int i = 0; i < NUM_FANS; i++)
-        g_fanDefaults[i] = {64, false, 1200, 0, 1, false, false};
+        g_fanDefaults[i] = {64, false, 1200, 3000, 0, 1, false, false};
 }
 
 void configLoad() {
@@ -73,6 +73,8 @@ void configLoad() {
         g_fanDefaults[i].minDrive     = fans[i]["minDrive"]     | 0;
         g_fanDefaults[i].pulsesPerRev = fans[i]["pulsesPerRev"] | 1;
         if (g_fanDefaults[i].pulsesPerRev < 1) g_fanDefaults[i].pulsesPerRev = 1;
+        g_fanDefaults[i].maxRpm       = fans[i]["maxRpm"]       | 3000;
+        if (g_fanDefaults[i].maxRpm < 100) g_fanDefaults[i].maxRpm = 3000;
         g_fanDefaults[i].hardSpinup   = fans[i]["hardSpinup"]   | false;
         g_fanDefaults[i].disabled     = fans[i]["disabled"]     | false;
     }
@@ -110,6 +112,7 @@ void configSave() {
                               : g_fanDefaults[i].closedLoop ? "rpm" : "pwm";
         o["disabled"]       = g_fanDefaults[i].disabled;
         o["targetRpm"]      = g_fanDefaults[i].targetRpm;
+        o["maxRpm"]         = g_fanDefaults[i].maxRpm;
         o["minDrive"]       = g_fanDefaults[i].minDrive;
         o["pulsesPerRev"]   = g_fanDefaults[i].pulsesPerRev;
         o["hardSpinup"]     = g_fanDefaults[i].hardSpinup;

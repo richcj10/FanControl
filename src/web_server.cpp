@@ -12,6 +12,8 @@
 #include "emc2305.h"
 #include "mqtt_handler.h"
 
+extern void applyFanDefaults();
+
 static void sendJson(AsyncWebServerRequest *req, const String &json, int code = 200) {
     req->send(code, "application/json", json);
 }
@@ -37,6 +39,7 @@ void webServerSetup(AsyncWebServer &server) {
         doc["ip"]        = ETH.localIP().toString();
         doc["espTempC"]  = (float)temperatureRead();
         doc["mqttOnline"]= mqttConnected();
+        doc["emc2305Ok"] = g_emc2305Ok;
         JsonArray fans  = doc["fans"].to<JsonArray>();
         for (int i = 0; i < NUM_FANS; i++) {
             JsonObject f = fans.add<JsonObject>();
@@ -191,10 +194,15 @@ void webServerSetup(AsyncWebServer &server) {
         JsonDocument doc;
         JsonArray arr = doc["fans"].to<JsonArray>();
         for (int i = 0; i < NUM_FANS; i++) {
-            JsonObject o  = arr.add<JsonObject>();
-            o["pwm"]      = g_fanDefaults[i].pwm;
-            o["mode"]     = g_fanDefaults[i].closedLoop ? "rpm" : "pwm";
-            o["targetRpm"]= g_fanDefaults[i].targetRpm;
+            JsonObject o       = arr.add<JsonObject>();
+            o["pwm"]           = g_fanDefaults[i].pwm;
+            o["mode"]          = g_fanDefaults[i].disabled    ? "off"
+                                 : g_fanDefaults[i].closedLoop ? "rpm" : "pwm";
+            o["targetRpm"]     = g_fanDefaults[i].targetRpm;
+            o["maxRpm"]        = g_fanDefaults[i].maxRpm;
+            o["minDrive"]      = g_fanDefaults[i].minDrive;
+            o["pulsesPerRev"]  = g_fanDefaults[i].pulsesPerRev;
+            o["hardSpinup"]    = g_fanDefaults[i].hardSpinup;
         }
         String out;
         serializeJson(doc, out);
@@ -209,13 +217,20 @@ void webServerSetup(AsyncWebServer &server) {
         if (deserializeJson(doc, data, len)) { req->send(400); return; }
         JsonArray arr = doc["fans"].as<JsonArray>();
         for (int i = 0; i < NUM_FANS && i < (int)arr.size(); i++) {
-            const char* mode            = arr[i]["mode"]       | "pwm";
-            g_fanDefaults[i].disabled   = (strcmp(mode, "off") == 0);
-            g_fanDefaults[i].closedLoop = (strcmp(mode, "rpm") == 0);
-            g_fanDefaults[i].pwm        = arr[i]["pwm"]       | g_fanDefaults[i].pwm;
-            g_fanDefaults[i].targetRpm  = arr[i]["targetRpm"] | g_fanDefaults[i].targetRpm;
+            const char* mode             = arr[i]["mode"]          | "pwm";
+            g_fanDefaults[i].disabled    = (strcmp(mode, "off") == 0);
+            g_fanDefaults[i].closedLoop  = (strcmp(mode, "rpm") == 0);
+            g_fanDefaults[i].pwm         = arr[i]["pwm"]           | g_fanDefaults[i].pwm;
+            g_fanDefaults[i].targetRpm   = arr[i]["targetRpm"]     | g_fanDefaults[i].targetRpm;
+            uint16_t mx = arr[i]["maxRpm"] | g_fanDefaults[i].maxRpm;
+            g_fanDefaults[i].maxRpm      = (mx >= 100) ? mx : g_fanDefaults[i].maxRpm;
+            g_fanDefaults[i].minDrive    = arr[i]["minDrive"]      | g_fanDefaults[i].minDrive;
+            uint8_t ppr = arr[i]["pulsesPerRev"] | g_fanDefaults[i].pulsesPerRev;
+            g_fanDefaults[i].pulsesPerRev = (ppr >= 1) ? ppr : 1;
+            g_fanDefaults[i].hardSpinup  = arr[i]["hardSpinup"]    | g_fanDefaults[i].hardSpinup;
         }
         configSave();
+        if (g_emc2305Ok) applyFanDefaults();
         sendJson(req, "{\"ok\":true}");
     });
 
@@ -255,6 +270,8 @@ void webServerSetup(AsyncWebServer &server) {
             const char* mode            = fans[i]["mode"]       | "pwm";
             g_fanDefaults[i].closedLoop = (strcmp(mode, "rpm") == 0);
             g_fanDefaults[i].targetRpm  = fans[i]["targetRpm"] | g_fanDefaults[i].targetRpm;
+            uint16_t mx = fans[i]["maxRpm"] | g_fanDefaults[i].maxRpm;
+            g_fanDefaults[i].maxRpm     = (mx >= 100) ? mx : g_fanDefaults[i].maxRpm;
         }
 
         configSave();

@@ -26,6 +26,10 @@
       <span class="led" id="mqttLed"></span>
       <span id="mqttLabel">MQTT</span>
     </div>
+    <div class="conn-badge" id="emcBadge">
+      <span class="led" id="emcLed"></span>
+      <span id="emcLabel">EMC2305</span>
+    </div>
     <span class="temp-chip" id="espTemp" title="ESP32 die temperature"></span>
     <span class="ts" id="lastUpdate"></span>
   </div>
@@ -136,6 +140,7 @@
             <th>Mode</th>
             <th>PWM (0–255)</th>
             <th>Target RPM</th>
+            <th title="Rated fan speed — sets gauge full-scale and caps closed-loop target">Max RPM</th>
             <th title="EMC2305 MIN_DRIVE register — stall floor (0=chip default)">Min Drive</th>
             <th title="Tach pulses per revolution — divide RPM if > 1">PPR</th>
             <th title="Spin-up kick strength">Spin-up</th>

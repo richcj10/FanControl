@@ -4,8 +4,9 @@
 // Constants
 // ----------------------------------------------------------------
 const NUM_FANS  = 5;
-const MAX_RPM   = 3000;
 const POLL_MS   = 2000;
+
+const fanMaxRpm = new Array(NUM_FANS).fill(3000);
 
 const G_R     = 46;
 const G_CIRC  = 2 * Math.PI * G_R;
@@ -45,8 +46,9 @@ function buildUI() {
           </select>
         </td>
         <td><input type="number" id="dp${n}" value="64"   min="0"   max="255"  title="PWM duty 0-255"></td>
-        <td><input type="number" id="dr${n}" value="1200" min="200" max="9999" title="Target RPM for closed-loop mode"></td>
-        <td><input type="number" id="dmin${n}" value="0"  min="0"   max="255"  title="EMC2305 MIN_DRIVE register — stall floor (0 = chip default)"></td>
+        <td><input type="number" id="dr${n}"    value="1200" min="200" max="9999" title="Target RPM for closed-loop mode"></td>
+        <td><input type="number" id="dmaxr${n}" value="3000" min="100" max="9999" title="Rated fan speed — gauge full-scale and closed-loop cap"></td>
+        <td><input type="number" id="dmin${n}"  value="0"    min="0"   max="255"  title="EMC2305 MIN_DRIVE register — stall floor (0 = chip default)"></td>
         <td><input type="number" id="dppr${n}" value="1"  min="1"   max="4"    title="Tach pulses per revolution"></td>
         <td>
           <select id="dsp${n}" class="def-select" title="Spin-up kick: Soft = chip default, Hard = 65% drive extended">
@@ -66,11 +68,12 @@ function buildUI() {
 function toggleDefaultRpm(n) {
   const mode = document.getElementById('dm' + n).value;
   const off  = (mode === 'off');
-  document.getElementById('dp'   + n).disabled = off || mode === 'rpm';
-  document.getElementById('dr'   + n).disabled = off || mode === 'pwm';
-  document.getElementById('dmin' + n).disabled = off;
-  document.getElementById('dppr' + n).disabled = off;
-  document.getElementById('dsp'  + n).disabled = off;
+  document.getElementById('dp'    + n).disabled = off || mode === 'rpm';
+  document.getElementById('dr'    + n).disabled = off || mode === 'pwm';
+  document.getElementById('dmaxr' + n).disabled = off;
+  document.getElementById('dmin'  + n).disabled = off;
+  document.getElementById('dppr'  + n).disabled = off;
+  document.getElementById('dsp'   + n).disabled = off;
 }
 
 function fanCardHTML(n) {
@@ -129,7 +132,7 @@ function rpmCtrlHTML(n) {
     <div class="ctrl-label"><span>Target RPM</span></div>
     <div class="rpm-row">
       <input class="rpm-input" type="number" id="ri${n}"
-             min="200" max="${MAX_RPM}" value="1200" placeholder="RPM">
+             min="200" max="${fanMaxRpm[n - 1]}" value="1200" placeholder="RPM">
       <button class="set-btn" onclick="sendTarget(${n})">SET</button>
     </div>`;
 }
@@ -144,7 +147,7 @@ function gaugeColor(pct) {
 }
 
 function setGauge(n, rpm) {
-  const pct  = Math.min(rpm / MAX_RPM, 1);
+  const pct  = Math.min(rpm / (fanMaxRpm[n - 1] || 3000), 1);
   const fill = G_ARC * pct;
   const el   = document.getElementById('gf' + n);
   if (!el) return;
@@ -202,6 +205,15 @@ function applyStatus(data) {
     mqttLabel.textContent = 'MQTT';
   }
 
+  // EMC2305 chip status badge
+  const emcLed   = document.getElementById('emcLed');
+  const emcBadge = document.getElementById('emcBadge');
+  if (emcLed) {
+    const ok = !!data.emc2305Ok;
+    emcLed.className   = 'led ' + (ok ? 'ok' : 'err');
+    emcBadge.className = 'conn-badge ' + (ok ? 'online' : 'offline');
+  }
+
   data.fans.forEach((f, i) => {
     const n = i + 1;
 
@@ -236,6 +248,45 @@ function applyStatus(data) {
     } else {
       badge.textContent = 'OFF';
       badge.className   = 'badge badge--off';
+    }
+
+    // Sync mode toggle and control widget to server state (fixes page-load mismatch)
+    const wantRpm = !!f.closedLoop;
+    const pwmBtn  = document.getElementById('bpwm' + n);
+    const rpmBtn  = document.getElementById('brpm' + n);
+    const ctrlEl  = document.getElementById('ctrl' + n);
+    if (pwmBtn && rpmBtn && ctrlEl) {
+      const isRpm = rpmBtn.classList.contains('active');
+      if (wantRpm !== isRpm) {
+        // Mode changed — rebuild the whole control widget
+        pwmBtn.classList.toggle('active', !wantRpm);
+        rpmBtn.classList.toggle('active', wantRpm);
+        ctrlEl.innerHTML = wantRpm ? rpmCtrlHTML(n) : sliderHTML(n);
+        if (wantRpm) {
+          const ri = document.getElementById('ri' + n);
+          if (ri && f.targetRpm) ri.value = f.targetRpm;
+        } else {
+          const sl  = document.getElementById('sl'  + n);
+          const slv = document.getElementById('slv' + n);
+          const p   = Math.round(f.pwm / 2.55);
+          if (sl)  sl.value = p;
+          if (slv) slv.textContent = p + '%';
+        }
+      } else if (wantRpm) {
+        // Already in RPM mode — keep target value in sync unless user is typing
+        const ri = document.getElementById('ri' + n);
+        if (ri && document.activeElement !== ri && f.targetRpm)
+          ri.value = f.targetRpm;
+      } else {
+        // Already in PWM mode — keep slider in sync unless user is dragging
+        const sl = document.getElementById('sl' + n);
+        if (sl && document.activeElement !== sl) {
+          const p   = Math.round(f.pwm / 2.55);
+          sl.value  = p;
+          const slv = document.getElementById('slv' + n);
+          if (slv) slv.textContent = p + '%';
+        }
+      }
     }
   });
 
@@ -325,12 +376,14 @@ function loadFanDefaults() {
       if (!Array.isArray(d.fans)) return;
       d.fans.forEach((f, i) => {
         const n = i + 1;
-        document.getElementById('dm'   + n).value = f.mode          ?? 'pwm';
-        document.getElementById('dp'   + n).value = f.pwm           ?? 64;
-        document.getElementById('dr'   + n).value = f.targetRpm     ?? 1200;
-        document.getElementById('dmin' + n).value = f.minDrive      ?? 0;
-        document.getElementById('dppr' + n).value = f.pulsesPerRev  ?? 1;
-        document.getElementById('dsp'  + n).value = f.hardSpinup    ? 'hard' : 'soft';
+        document.getElementById('dm'    + n).value = f.mode          ?? 'pwm';
+        document.getElementById('dp'    + n).value = f.pwm           ?? 64;
+        document.getElementById('dr'    + n).value = f.targetRpm     ?? 1200;
+        document.getElementById('dmaxr' + n).value = f.maxRpm        ?? 3000;
+        document.getElementById('dmin'  + n).value = f.minDrive      ?? 0;
+        document.getElementById('dppr'  + n).value = f.pulsesPerRev  ?? 1;
+        document.getElementById('dsp'   + n).value = f.hardSpinup    ? 'hard' : 'soft';
+        fanMaxRpm[i] = (f.maxRpm >= 100) ? f.maxRpm : 3000;
         toggleDefaultRpm(n);
       });
     })
@@ -341,11 +394,12 @@ function saveFanDefaults() {
   const fans = [];
   for (let n = 1; n <= NUM_FANS; n++) {
     fans.push({
-      mode:         document.getElementById('dm'   + n).value,
-      pwm:          parseInt(document.getElementById('dp'   + n).value, 10) || 64,
-      targetRpm:    parseInt(document.getElementById('dr'   + n).value, 10) || 1200,
-      minDrive:     parseInt(document.getElementById('dmin' + n).value, 10) || 0,
-      pulsesPerRev: parseInt(document.getElementById('dppr' + n).value, 10) || 1,
+      mode:         document.getElementById('dm'    + n).value,
+      pwm:          parseInt(document.getElementById('dp'    + n).value, 10) || 64,
+      targetRpm:    parseInt(document.getElementById('dr'    + n).value, 10) || 1200,
+      maxRpm:       parseInt(document.getElementById('dmaxr' + n).value, 10) || 3000,
+      minDrive:     parseInt(document.getElementById('dmin'  + n).value, 10) || 0,
+      pulsesPerRev: parseInt(document.getElementById('dppr'  + n).value, 10) || 1,
       hardSpinup:   document.getElementById('dsp' + n).value === 'hard',
     });
   }

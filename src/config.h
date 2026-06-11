@@ -33,6 +33,7 @@ struct FanDefault {
     uint8_t  pwm;           // direct-PWM duty (0-255)
     bool     closedLoop;    // true = closed-loop RPM mode at boot
     uint16_t targetRpm;     // closed-loop setpoint
+    uint16_t maxRpm;        // rated fan speed — gauge full-scale and closed-loop cap (0 = use 3000)
     uint8_t  minDrive;      // EMC2305 MIN_DRIVE register (0-255); 0 = chip default
     uint8_t  pulsesPerRev;  // tach pulses per revolution (1-4); corrects RPM if > 1
     bool     hardSpinup;    // true = 65% drive / extended time; false = chip default
@@ -58,6 +59,8 @@ struct FanState {
 extern AppConfig  g_config;
 extern FanState   g_fans[NUM_FANS];
 extern FanDefault g_fanDefaults[NUM_FANS];
+/** True once the EMC2305 has been successfully initialised. */
+extern bool       g_emc2305Ok;
 
 void configLoad();
 void configSave();

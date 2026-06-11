@@ -12,6 +12,7 @@
  * | `<prefix>/fanN/pwm`             | `"0"`–`"100"`      | Duty cycle as %           |
  * | `<prefix>/fanN/alert`           | `ON` / `OFF`       | Any fault active          |
  * | `<prefix>/temp`                 | e.g. `"45.2"`      | ESP32 die temp in °C      |
+ * | `<prefix>/emc2305`              | `OK` / `FAULT`     | Fan IC reachable on I2C   |
  *
  * ## Subscribed topics  (incoming commands)
  * | Topic                           | Payload            | Action                    |
@@ -41,6 +42,9 @@ void mqttPublishStatus();
 
 /** Publish a single fan's generic alert state (any fault → ON). */
 void mqttPublishAlert(uint8_t fanNum, bool alert);
+
+/** Publish EMC2305 chip health immediately — call on state change. */
+void mqttPublishEmc2305(bool ok);
 
 /** Publish HA MQTT auto-discovery config for all enabled fans. */
 void mqttPublishDiscovery();

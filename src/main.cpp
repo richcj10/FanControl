@@ -10,9 +10,10 @@
  * ## Boot sequence
  * 1. Mount LittleFS (no format-on-fail — re-upload filesystem image if this fails).
  * 2. Load all settings from /settings.json via @ref configLoad().
- * 3. Initialise I2C and the EMC2305 fan controller.
- * 4. Apply per-fan boot defaults: PWM/mode, MIN_DRIVE, spin-up config.
- * 5. Enable EMC2305 watchdog and per-fan ramp-rate control.
+ * 3. Initialise I2C and attempt EMC2305 init.  On failure the device continues
+ *    degraded and retries every 5 s in loop() until the chip is found.
+ * 4. If EMC2305 init succeeded: apply per-fan boot defaults, enable watchdog
+ *    and per-fan ramp-rate control (@ref onEmc2305Ready).
  * 6. Register Ethernet event handler and start ETH driver.
  * 7. Register HTTP routes, web OTA (/update, if enabled), and start the server.
  * 8. Start ArduinoOTA push listener if enabled.
@@ -48,6 +49,7 @@
 
 static AsyncWebServer server(80);
 static bool ethUp = false;
+bool g_emc2305Ok  = false;
 
 static void onEthEvent(WiFiEvent_t event) {
     switch (event) {
@@ -112,7 +114,19 @@ static void checkAlarms() {
     }
 }
 
-static void applyFanDefaults() {
+void applyFanDefaults();  // forward declaration
+
+/** Called once EMC2305 init succeeds — at boot or on first successful retry. */
+static void onEmc2305Ready() {
+    applyFanDefaults();
+    emc2305EnableWatchdog(true);
+    for (int i = 1; i <= NUM_FANS; i++)
+        emc2305EnableRamp(i, true);
+    g_emc2305Ok = true;
+    mqttPublishEmc2305(true);  // immediate MQTT alert on recovery
+}
+
+void applyFanDefaults() {
     for (int i = 1; i <= NUM_FANS; i++) {
         const FanDefault &d = g_fanDefaults[i - 1];
 
@@ -133,8 +147,9 @@ static void applyFanDefaults() {
                         d.hardSpinup ? 0xEB : 0x19);
 
         if (d.closedLoop) {
+            uint16_t target = (d.maxRpm > 0 && d.targetRpm > d.maxRpm) ? d.maxRpm : d.targetRpm;
             emc2305SetMode(i, true);
-            emc2305SetTargetRpm(i, d.targetRpm);
+            emc2305SetTargetRpm(i, target);
             g_fans[i - 1].closedLoop = true;
             g_fans[i - 1].targetRpm  = d.targetRpm;
         } else {
@@ -164,17 +179,12 @@ void setup() {
     delay(50);
 
     Serial.print("EMC2305 init... ");
-    if (!emc2305Init()) {
-        Serial.println("FAILED — halting");
-        while (true) delay(1000);
+    if (emc2305Init()) {
+        Serial.println("OK");
+        onEmc2305Ready();
+    } else {
+        Serial.println("not found — continuing degraded, will retry every 5 s");
     }
-    Serial.println("OK");
-
-    applyFanDefaults();
-
-    emc2305EnableWatchdog(true);
-    for (int i = 1; i <= NUM_FANS; i++)
-        emc2305EnableRamp(i, true);
 
     WiFi.onEvent(onEthEvent);
     ETH.begin(ETH_PHY_ADDR, ETH_PHY_POWER, ETH_PHY_MDC, ETH_PHY_MDIO, ETH_PHY_LAN8720, ETH_CLK_MODE);
@@ -195,16 +205,29 @@ void setup() {
 }
 
 void loop() {
-    static uint32_t lastTach    = 0;
-    static uint32_t lastAlarm   = 0;
-    static uint32_t lastMqttPub = 0;
+    static uint32_t lastTach         = 0;
+    static uint32_t lastAlarm        = 0;
+    static uint32_t lastMqttPub      = 0;
+    static uint32_t lastEmc2305Retry = 0;
 
-    if (millis() - lastTach >= 500) {
+    // Periodically retry EMC2305 init if it failed at boot
+    if (!g_emc2305Ok && millis() - lastEmc2305Retry >= 5000) {
+        lastEmc2305Retry = millis();
+        Serial.print("EMC2305 retry... ");
+        if (emc2305Init()) {
+            Serial.println("OK");
+            onEmc2305Ready();
+        } else {
+            Serial.println("still not found");
+        }
+    }
+
+    if (g_emc2305Ok && millis() - lastTach >= 500) {
         lastTach = millis();
         updateFanStatus();
     }
 
-    if (millis() - lastAlarm >= 1000) {
+    if (g_emc2305Ok && millis() - lastAlarm >= 1000) {
         lastAlarm = millis();
         checkAlarms();
     }
