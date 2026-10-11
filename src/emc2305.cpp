@@ -171,6 +171,20 @@ bool emc2305SetMode(uint8_t fanNum, bool closedLoop) {
 }
 
 /**
+ * @brief Read the actual control mode (ENAG bit) from FAN_CFG1.
+ * @param fanNum 1–5.
+ * @param[out] closedLoop true if ENAG=1.
+ * @return true on success.
+ */
+bool emc2305ReadMode(uint8_t fanNum, bool &closedLoop) {
+    if (fanNum < 1 || fanNum > 5) return false;
+    uint8_t cfg1;
+    if (!emc2305ReadReg(EMC2305_FAN_BASE[fanNum - 1] + EMC2305_OFF_FAN_CFG1, cfg1)) return false;
+    closedLoop = (cfg1 & (1 << 7)) != 0;
+    return true;
+}
+
+/**
  * @brief Write the closed-loop RPM target to the TACH_TARGET registers.
  *
  * Converts RPM to a 13-bit tach count using the inverse of

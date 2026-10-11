@@ -51,6 +51,16 @@ struct FanState {
     bool     alarmRpmLow;
     bool     alarmRpmHigh;
 
+    // Power state (see fan_control.cpp).  `on` is the fan's intended state;
+    // alarms are suppressed while it is false.
+    bool     on;
+    uint32_t onSinceMs;         // millis() of the last off->on transition
+    // Snapshot taken by fanPowerOff() and consumed by fanPowerOn()
+    bool     savedValid;
+    bool     savedClosedLoop;
+    uint16_t savedTargetRpm;
+    uint8_t  savedPwm;
+
     bool anyAlarm() const {
         return alarmStall || alarmSpinFail || alarmDriveFail || alarmRpmLow || alarmRpmHigh;
     }

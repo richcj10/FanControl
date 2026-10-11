@@ -100,13 +100,24 @@ static void checkAlarms() {
         const uint8_t bit    = (uint8_t)(1 << i);
         bool          wasAny = g_fans[i].anyAlarm();
 
+        // Fan intentionally off — a stopped fan is not a fault.  Clear any
+        // alarm that was active (and tell MQTT) and skip detection.
+        if (!g_fans[i].on) {
+            g_fans[i].alarmStall = g_fans[i].alarmSpinFail = g_fans[i].alarmDriveFail = false;
+            g_fans[i].alarmRpmLow = g_fans[i].alarmRpmHigh = false;
+            if (wasAny) mqttPublishAlert(i + 1, false);
+            continue;
+        }
+
         g_fans[i].alarmStall      = (fs.stall     & bit) != 0;
         g_fans[i].alarmSpinFail   = (fs.spin      & bit) != 0;
         g_fans[i].alarmDriveFail  = (fs.driveFail & bit) != 0;
 
         const uint16_t lo = g_config.alarms[i].minRpm;
         const uint16_t hi = g_config.alarms[i].maxRpm;
-        g_fans[i].alarmRpmLow  = (lo > 0 && g_fans[i].rpm > 0 && g_fans[i].rpm < lo);
+        // 5 s grace after power-on / restart while the fan spins up through the low band
+        const bool settling = (millis() - g_fans[i].onSinceMs) < 5000;
+        g_fans[i].alarmRpmLow  = !settling && (lo > 0 && g_fans[i].rpm > 0 && g_fans[i].rpm < lo);
         g_fans[i].alarmRpmHigh = (hi > 0 && g_fans[i].rpm > hi);
 
         if (g_fans[i].anyAlarm() != wasAny)
@@ -135,6 +146,7 @@ void applyFanDefaults() {
             emc2305SetFanPWM(i, 0);
             g_fans[i - 1].pwm        = 0;
             g_fans[i - 1].closedLoop = false;
+            g_fans[i - 1].on         = false;
             continue;
         }
 
@@ -152,11 +164,15 @@ void applyFanDefaults() {
             emc2305SetTargetRpm(i, target);
             g_fans[i - 1].closedLoop = true;
             g_fans[i - 1].targetRpm  = d.targetRpm;
+            g_fans[i - 1].on         = target > 0;
         } else {
             emc2305SetFanPWM(i, d.pwm);
             g_fans[i - 1].pwm        = d.pwm;
             g_fans[i - 1].closedLoop = false;
+            g_fans[i - 1].on         = d.pwm > 0;
         }
+        g_fans[i - 1].onSinceMs  = millis();
+        g_fans[i - 1].savedValid = false;
     }
 }
 

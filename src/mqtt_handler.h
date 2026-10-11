@@ -17,8 +17,13 @@
  * ## Subscribed topics  (incoming commands)
  * | Topic                           | Payload            | Action                    |
  * |---------------------------------|--------------------|---------------------------|
- * | `<prefix>/+/set/pct`            | `"0"`–`"100"`      | Set fan speed %           |
- * | `<prefix>/+/set/power`          | `ON` / `OFF`       | Fan on (restore default) or off |
+ * | `<prefix>/fanN/set/power`       | ON/OFF/on/off/1/0/true/false or `{"state":"ON"}` | Stop (any mode) / restore saved state |
+ * | `<prefix>/all/set/power`        | same              | Same, for every enabled fan |
+ * | `<prefix>/fanN/set/pct`         | `"0"`–`"100"`      | Direct PWM % (forces PWM mode; 0 = off) |
+ * | `<prefix>/fanN/set/rpm`         | RPM integer        | Closed-loop at target, fan on |
+ *
+ * Also published (retained): `<prefix>/fanN/state` (`ON`/`OFF`) and
+ * `<prefix>/fanN/attrs` (JSON: power, mode, target_rpm, rpm, pwm_pct).
  *
  * ## HA auto-discovery  (retained, published on every connect)
  * | Component       | Path                                     |
@@ -39,6 +44,12 @@ bool mqttConnected();
 
 /** Publish rpm, pwm%, and alert state for all enabled fans + ESP32 temp. */
 void mqttPublishStatus();
+
+/** Publish a fan's real power state and attributes — call after any change. */
+void mqttPublishFanState(uint8_t fanNum);
+
+/** Config (host/port/prefix) changed: reconnect and re-subscribe on the main loop. */
+void mqttApplyConfig();
 
 /** Publish a single fan's generic alert state (any fault → ON). */
 void mqttPublishAlert(uint8_t fanNum, bool alert);

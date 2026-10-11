@@ -16,9 +16,13 @@
 #include <ArduinoJson.h>
 #include "config.h"
 #include "emc2305.h"
+#include "fan_control.h"
 
 static WiFiClient   ethClient;
 static PubSubClient mqtt(ethClient);
+// Prefix the current subscriptions / retained topics were made under
+static char         activePrefix[40] = "";
+static volatile bool configDirty = false;
 static uint32_t     lastAttemptMs  = UINT32_MAX;
 static bool         wasConnected   = false;
 static bool         availPublished = false;
@@ -71,31 +75,113 @@ static void addDevice(JsonObject dev) {
 // ----------------------------------------------------------------
 // Command callback
 // ----------------------------------------------------------------
-static void onMessage(char *topic, byte *payload, unsigned int len) {
-    const char *rest = topic + strlen(g_config.mqttPrefix) + 1;
-    int  fanNum = 0;
-    char cmd[16] = "";
-    if (sscanf(rest, "fan%d/set/%15s", &fanNum, cmd) != 2) return;
-    if (fanNum < 1 || fanNum > NUM_FANS) return;
-    if (g_fanDefaults[fanNum - 1].disabled) return;
 
-    char val[16] = "";
+/** Trim whitespace (and one layer of double quotes) in place. */
+static char* trim(char *s) {
+    while (*s && isspace((uint8_t)*s)) s++;
+    size_t n = strlen(s);
+    while (n && isspace((uint8_t)s[n - 1])) s[--n] = '\0';
+    if (n >= 2 && s[0] == '"' && s[n - 1] == '"') { s[n - 1] = '\0'; s++; }
+    return s;
+}
+
+/**
+ * Parse a power payload: ON/OFF, on/off, 1/0, true/false (any case) or
+ * {"state":"ON"} / {"state":"OFF"}.  Returns 1, 0, or -1 if unrecognised.
+ */
+static int parsePower(char *val) {
+    char *s = trim(val);
+    JsonDocument doc;
+    if (*s == '{') {
+        if (deserializeJson(doc, s)) return -1;
+        const char *st = doc["state"] | (const char*)nullptr;
+        if (!st) return -1;
+        static char buf[16];
+        strlcpy(buf, st, sizeof(buf));
+        s = trim(buf);
+    }
+    if (!strcasecmp(s, "on")  || !strcmp(s, "1") || !strcasecmp(s, "true"))  return 1;
+    if (!strcasecmp(s, "off") || !strcmp(s, "0") || !strcasecmp(s, "false")) return 0;
+    return -1;
+}
+
+/** Parse a plain number payload; false if it isn't one. */
+static bool parseNumber(char *val, float &out) {
+    char *s = trim(val), *end = nullptr;
+    out = strtof(s, &end);
+    return end != s && *end == '\0';
+}
+
+static void applyPower(int fanNum, bool on) {
+    bool ok = on ? fanPowerOn(fanNum) : fanPowerOff(fanNum);
+    if (!ok) Serial.printf("MQTT: fan%d power %s FAILED\n", fanNum, on ? "ON" : "OFF");
+    mqttPublishFanState(fanNum);   // always report what the fan is really doing
+}
+
+static void onMessage(char *topic, byte *payload, unsigned int len) {
+    char val[64];
     unsigned int n = (len < sizeof(val) - 1) ? len : sizeof(val) - 1;
     memcpy(val, payload, n);
     val[n] = '\0';
+    Serial.printf("MQTT rx: %s = '%s'\n", topic, val);
 
-    if (strcmp(cmd, "pct") == 0) {
-        int pct = constrain(atoi(val), 0, 100);
-        uint8_t pwm = (uint8_t)((pct * 255 + 50) / 100);
-        if (emc2305SetFanPWM(fanNum, pwm)) g_fans[fanNum - 1].pwm = pwm;
+    // Match against the prefix we actually subscribed with (it may have just changed)
+    size_t plen = strlen(activePrefix);
+    if (strncmp(topic, activePrefix, plen) != 0 || topic[plen] != '/') {
+        Serial.println("MQTT reject: topic not under active prefix");
+        return;
+    }
+    const char *rest = topic + plen + 1;
 
-    } else if (strcmp(cmd, "power") == 0) {
-        if (strcmp(val, "OFF") == 0) {
-            if (emc2305SetFanPWM(fanNum, 0)) g_fans[fanNum - 1].pwm = 0;
-        } else if (strcmp(val, "ON") == 0) {
-            uint8_t pwm = g_fanDefaults[fanNum - 1].pwm ? g_fanDefaults[fanNum - 1].pwm : 64;
-            if (emc2305SetFanPWM(fanNum, pwm)) g_fans[fanNum - 1].pwm = pwm;
+    // ---- all fans ----
+    if (strcmp(rest, "all/set/power") == 0) {
+        int p = parsePower(val);
+        if (p < 0) { Serial.printf("MQTT reject: bad power payload '%s'\n", val); return; }
+        for (int i = 1; i <= NUM_FANS; i++) {
+            if (g_fanDefaults[i - 1].disabled) continue;
+            applyPower(i, p == 1);
         }
+        return;
+    }
+
+    // ---- single fan ----
+    int  fanNum = 0, used = 0;
+    char cmd[16] = "";
+    if (sscanf(rest, "fan%d/set/%15s%n", &fanNum, cmd, &used) != 2 || rest[used] != '\0') {
+        Serial.printf("MQTT reject: unknown topic '%s'\n", rest);
+        return;
+    }
+    if (fanNum < 1 || fanNum > NUM_FANS) {
+        Serial.printf("MQTT reject: fan %d out of range\n", fanNum);
+        return;
+    }
+    if (g_fanDefaults[fanNum - 1].disabled) {
+        Serial.printf("MQTT reject: fan%d is disabled\n", fanNum);
+        return;
+    }
+
+    if (strcmp(cmd, "power") == 0) {
+        int p = parsePower(val);
+        if (p < 0) { Serial.printf("MQTT reject: bad power payload '%s'\n", val); return; }
+        applyPower(fanNum, p == 1);
+
+    } else if (strcmp(cmd, "pct") == 0) {
+        float f;
+        if (!parseNumber(val, f)) { Serial.printf("MQTT reject: bad pct payload '%s'\n", val); return; }
+        if (!fanSetPct(fanNum, (int)(f + 0.5f)))
+            Serial.printf("MQTT: fan%d set pct FAILED\n", fanNum);
+        mqttPublishFanState(fanNum);
+
+    } else if (strcmp(cmd, "rpm") == 0) {
+        float f;
+        if (!parseNumber(val, f) || f < 1) { Serial.printf("MQTT reject: bad rpm payload '%s'\n", val); return; }
+        if (f > 65535) f = 65535;
+        if (!fanSetRpm(fanNum, (uint16_t)f))
+            Serial.printf("MQTT: fan%d set rpm FAILED\n", fanNum);
+        mqttPublishFanState(fanNum);
+
+    } else {
+        Serial.printf("MQTT reject: unknown command '%s'\n", cmd);
     }
 }
 
@@ -111,13 +197,34 @@ void mqttSetup() {
 }
 
 static void mqttSubscribeCommands() {
+    strlcpy(activePrefix, g_config.mqttPrefix, sizeof(activePrefix));
     char topic[80];
-    // + must be a complete topic level — "fan+" is invalid per MQTT spec
-    snprintf(topic, sizeof(topic), "%s/+/set/pct",   g_config.mqttPrefix);
+    // + must be a complete topic level — "fan+" is invalid per MQTT spec.
+    // The "+" in set/power also matches "all", giving <prefix>/all/set/power.
+    snprintf(topic, sizeof(topic), "%s/+/set/pct",   activePrefix);
     mqtt.subscribe(topic);
-    snprintf(topic, sizeof(topic), "%s/+/set/power", g_config.mqttPrefix);
+    snprintf(topic, sizeof(topic), "%s/+/set/power", activePrefix);
     mqtt.subscribe(topic);
-    Serial.printf("MQTT subscribed: %s/+/set/{pct,power}\n", g_config.mqttPrefix);
+    snprintf(topic, sizeof(topic), "%s/+/set/rpm",   activePrefix);
+    mqtt.subscribe(topic);
+    Serial.printf("MQTT subscribed: %s/+/set/{pct,power,rpm}\n", activePrefix);
+}
+
+void mqttApplyConfig() { configDirty = true; }
+
+/** Runs in the main loop: drop the session so reconnect re-subscribes and re-announces. */
+static void mqttHandleConfigChange() {
+    if (!configDirty) return;
+    configDirty = false;
+    if (mqtt.connected()) {
+        char t[80];
+        snprintf(t, sizeof(t), "%s/availability", activePrefix);
+        mqtt.publish(t, "offline", true);   // old prefix is going away
+        mqtt.disconnect();
+    }
+    mqtt.setServer(g_config.mqttHost, g_config.mqttPort);
+    lastAttemptMs = millis() - 10001;       // reconnect immediately
+    Serial.println("MQTT config changed — reconnecting");
 }
 
 static void mqttReconnect() {
@@ -164,6 +271,7 @@ static void mqttReconnect() {
         availPublished = pub(lwt, "online", true);
         mqttSubscribeCommands();
         mqttPublishDiscovery();
+        for (int i = 1; i <= NUM_FANS; i++) mqttPublishFanState(i);
     } else {
         int rc = mqtt.state();
         Serial.printf("  Result  : FAILED rc=%d — %s\n", rc, mqttStateStr(rc));
@@ -183,6 +291,7 @@ void mqttLoop() {
     }
     wasConnected = now;
 
+    mqttHandleConfigChange();
     mqttReconnect();
     mqtt.loop();
 }
@@ -218,6 +327,8 @@ void mqttPublishStatus() {
 
         snprintf(topic, sizeof(topic), "%s/fan%d/alert", g_config.mqttPrefix, n);
         pub(topic, g_fans[i].anyAlarm() ? "ON" : "OFF", true);
+
+        mqttPublishFanState(n);
     }
 
     // ESP32 die temp — plain float string
@@ -228,6 +339,32 @@ void mqttPublishStatus() {
     // EMC2305 chip health
     snprintf(topic, sizeof(topic), "%s/emc2305", g_config.mqttPrefix);
     pub(topic, g_emc2305Ok ? "OK" : "FAULT", true);
+}
+
+// ----------------------------------------------------------------
+// Fan power state + attributes  (<prefix>/fanN/state, <prefix>/fanN/attrs)
+// ----------------------------------------------------------------
+void mqttPublishFanState(uint8_t fanNum) {
+    if (!mqtt.connected()) return;
+    if (fanNum < 1 || fanNum > NUM_FANS) return;
+    if (g_fanDefaults[fanNum - 1].disabled) return;
+    const FanState &f = g_fans[fanNum - 1];
+
+    char topic[80];
+    snprintf(topic, sizeof(topic), "%s/fan%d/state", g_config.mqttPrefix, fanNum);
+    pub(topic, f.on ? "ON" : "OFF", true);
+
+    JsonDocument doc;
+    doc["power"]   = f.on ? "ON" : "OFF";
+    doc["mode"]    = f.closedLoop ? "closed_loop" : "pwm";
+    if (f.closedLoop) doc["target_rpm"] = f.targetRpm;
+    else              doc["target_rpm"] = nullptr;
+    doc["rpm"]     = f.rpm;
+    doc["pwm_pct"] = f.pwm * 100 / 255;
+    char payload[160];
+    serializeJson(doc, payload, sizeof(payload));
+    snprintf(topic, sizeof(topic), "%s/fan%d/attrs", g_config.mqttPrefix, fanNum);
+    pub(topic, payload, true);
 }
 
 // ----------------------------------------------------------------
@@ -268,11 +405,11 @@ void mqttPublishDiscovery() {
         if (g_fanDefaults[i].disabled) continue;
 
         int  n = i + 1;
-        char statusTopic[80];
-        snprintf(statusTopic, sizeof(statusTopic), "%s/fan%d/status", g_config.mqttPrefix, n);
-
-        char uid[48], suffix[24], discTopic[100], payload[700];
+        char uid[48], suffix[24], discTopic[100], payload[800];
         char rpmTopic[80], pwmTopic[80], alertTopic[80], pctCmd[80], powerCmd[80];
+        char stateTopic[80], attrsTopic[80];
+        snprintf(stateTopic, sizeof(stateTopic), "%s/fan%d/state", g_config.mqttPrefix, n);
+        snprintf(attrsTopic, sizeof(attrsTopic), "%s/fan%d/attrs", g_config.mqttPrefix, n);
         snprintf(rpmTopic,   sizeof(rpmTopic),   "%s/fan%d/rpm",       g_config.mqttPrefix, n);
         snprintf(pwmTopic,   sizeof(pwmTopic),   "%s/fan%d/pwm",       g_config.mqttPrefix, n);
         snprintf(alertTopic, sizeof(alertTopic), "%s/fan%d/alert",     g_config.mqttPrefix, n);
@@ -348,14 +485,16 @@ void mqttPublishDiscovery() {
             doc["cmd_t"]        = powerCmd;
             doc["pl_on"]        = "ON";
             doc["pl_off"]       = "OFF";
-            doc["stat_t"]       = pwmTopic;
-            doc["stat_val_tpl"] = "{{ 'ON' if value|int > 0 else 'OFF' }}";
+            doc["stat_t"]       = stateTopic;     // real power state, ON/OFF
+            doc["json_attr_t"]  = attrsTopic;     // mode, target_rpm, rpm, pwm_pct
             doc["pct_cmd_t"]    = pctCmd;
             doc["pct_stat_t"]   = pwmTopic;
             doc["spd_rng_min"]  = 1;
             doc["spd_rng_max"]  = 100;
             addDevice(doc["dev"].to<JsonObject>());
-            serializeJson(doc, payload, sizeof(payload));
+            size_t need = serializeJson(doc, payload, sizeof(payload));
+            if (need >= sizeof(payload)) Serial.printf("MQTT discovery fan%d payload TRUNCATED (%u)\n", n, (unsigned)need);
+            Serial.printf("MQTT discovery fan%d: %s\n", n, payload);
             snprintf(discTopic, sizeof(discTopic), "homeassistant/fan/%s/fan%d/config", g_config.hostname, n);
             pub(discTopic, payload, true);
         }

@@ -14,6 +14,13 @@
 
 extern void applyFanDefaults();
 
+/** Keep the power flag honest when the web API drives the chip directly. */
+static void setFanOn(uint8_t fan, bool on) {
+    FanState &f = g_fans[fan - 1];
+    if (on && !f.on) f.onSinceMs = millis();
+    f.on = on;
+}
+
 static void sendJson(AsyncWebServerRequest *req, const String &json, int code = 200) {
     req->send(code, "application/json", json);
 }
@@ -110,7 +117,11 @@ void webServerSetup(AsyncWebServer &server) {
         uint8_t fan = doc["fan"] | 0;
         uint8_t pwm = doc["pwm"] | 0;
         bool ok = emc2305SetFanPWM(fan, pwm);
-        if (ok && fan >= 1 && fan <= NUM_FANS) g_fans[fan - 1].pwm = pwm;
+        if (ok && fan >= 1 && fan <= NUM_FANS) {
+            g_fans[fan - 1].pwm = pwm;
+            if (!g_fans[fan - 1].closedLoop) setFanOn(fan, pwm > 0);
+            mqttPublishFanState(fan);
+        }
         sendJson(req, ok ? "{\"ok\":true}" : "{\"ok\":false}");
     });
 
@@ -123,7 +134,11 @@ void webServerSetup(AsyncWebServer &server) {
         uint8_t fan  = doc["fan"] | 0;
         bool   isRpm = String((const char*)(doc["mode"] | "pwm")) == "rpm";
         bool ok = emc2305SetMode(fan, isRpm);
-        if (ok && fan >= 1 && fan <= NUM_FANS) g_fans[fan - 1].closedLoop = isRpm;
+        if (ok && fan >= 1 && fan <= NUM_FANS) {
+            g_fans[fan - 1].closedLoop = isRpm;
+            if (isRpm) setFanOn(fan, g_fans[fan - 1].targetRpm > 0);
+            mqttPublishFanState(fan);
+        }
         sendJson(req, ok ? "{\"ok\":true}" : "{\"ok\":false}");
     });
 
@@ -136,7 +151,11 @@ void webServerSetup(AsyncWebServer &server) {
         uint8_t  fan = doc["fan"] | 0;
         uint16_t rpm = doc["rpm"] | 0;
         bool ok = emc2305SetTargetRpm(fan, rpm);
-        if (ok && fan >= 1 && fan <= NUM_FANS) g_fans[fan - 1].targetRpm = rpm;
+        if (ok && fan >= 1 && fan <= NUM_FANS) {
+            g_fans[fan - 1].targetRpm = rpm;
+            if (g_fans[fan - 1].closedLoop) setFanOn(fan, true);
+            mqttPublishFanState(fan);
+        }
         sendJson(req, ok ? "{\"ok\":true}" : "{\"ok\":false}");
     });
 
@@ -148,10 +167,14 @@ void webServerSetup(AsyncWebServer &server) {
         if (deserializeJson(doc, data, len)) { req->send(400); return; }
         strlcpy(g_config.mqttHost,   doc["mqttHost"]   | "", sizeof(g_config.mqttHost));
         strlcpy(g_config.mqttUser,   doc["mqttUser"]   | "", sizeof(g_config.mqttUser));
-        strlcpy(g_config.mqttPass,   doc["mqttPass"]   | "", sizeof(g_config.mqttPass));
+        // GET /api/config never returns the password, so the form field is blank
+        // unless retyped — a blank value means "keep the stored password".
+        const char *newPass = doc["mqttPass"] | "";
+        if (newPass[0]) strlcpy(g_config.mqttPass, newPass, sizeof(g_config.mqttPass));
         strlcpy(g_config.mqttPrefix, doc["mqttPrefix"] | "fancontrol", sizeof(g_config.mqttPrefix));
         g_config.mqttPort = doc["mqttPort"] | 1883;
         configSave();
+        mqttApplyConfig();   // reconnect + resubscribe under the new host/prefix
         sendJson(req, "{\"ok\":true}");
     });
 

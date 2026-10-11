@@ -156,6 +156,14 @@ uint32_t emc2305TachToRPM(uint16_t tachCount);
 bool emc2305SetMode(uint8_t fanNum, bool closedLoop);
 
 /**
+ * @brief Read the actual control mode (ENAG bit) from FAN_CFG1.
+ * @param fanNum Fan number, 1–5.
+ * @param[out] closedLoop true if ENAG=1.
+ * @return true on success.
+ */
+bool emc2305ReadMode(uint8_t fanNum, bool &closedLoop);
+
+/**
  * @brief Set the closed-loop RPM target for one fan.
  *
  * Converts the target RPM to a 13-bit tach-period value and writes it to

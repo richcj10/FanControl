@@ -1,10 +1,18 @@
 /**
  * @file config.cpp
- * @brief LittleFS JSON persistence for all application settings (/settings.json).
+ * @brief Settings persistence.
+ *
+ * - **NVS** (Preferences namespace "fanctl"): hostname and all MQTT settings,
+ *   so they survive a LittleFS re-flash / filesystem image upload.
+ * - **LittleFS** (/settings.json): alarms, OTA, and per-fan boot defaults.
+ *
+ * On first boot after upgrading, hostname/MQTT are migrated from the old
+ * /settings.json into NVS and then dropped from the JSON.
  */
 
 #include "config.h"
 #include <LittleFS.h>
+#include <Preferences.h>
 #include <ArduinoJson.h>
 #include <string.h>
 
@@ -13,6 +21,7 @@ FanState   g_fans[NUM_FANS];
 FanDefault g_fanDefaults[NUM_FANS];
 
 #define SETTINGS_FILE "/settings.json"
+#define NVS_NS        "fanctl"
 
 static void applyDefaults() {
     strlcpy(g_config.hostname,   "fancontrol",  sizeof(g_config.hostname));
@@ -29,9 +38,8 @@ static void applyDefaults() {
         g_fanDefaults[i] = {64, false, 1200, 3000, 0, 1, false, false};
 }
 
-void configLoad() {
-    applyDefaults();
-
+/** Read /settings.json (including legacy hostname/mqtt keys, for migration). */
+static void loadJson() {
     File f = LittleFS.open(SETTINGS_FILE, "r");
     if (!f) return;
 
@@ -80,17 +88,57 @@ void configLoad() {
     }
 }
 
+/** Write a string key only if it changed — avoids needless flash writes. */
+static void putStr(Preferences &p, const char *key, const char *val) {
+    if (!p.isKey(key) || p.getString(key, "") != val) p.putString(key, val);
+}
+
+static void saveNvs() {
+    Preferences p;
+    if (!p.begin(NVS_NS, false)) { Serial.println("NVS open FAILED — settings not saved"); return; }
+    putStr(p, "hostname", g_config.hostname);
+    putStr(p, "mqtt_host", g_config.mqttHost);
+    putStr(p, "mqtt_user", g_config.mqttUser);
+    putStr(p, "mqtt_pass", g_config.mqttPass);
+    putStr(p, "mqtt_prefix", g_config.mqttPrefix);
+    if (p.getUShort("mqtt_port", 0) != g_config.mqttPort) p.putUShort("mqtt_port", g_config.mqttPort);
+    if (!p.isKey("init")) p.putBool("init", true);
+    p.end();
+}
+
+void configLoad() {
+    applyDefaults();
+    loadJson();     // fills hostname/mqtt from legacy JSON if present
+
+    Preferences p;
+    if (!p.begin(NVS_NS, true) ) {
+        // Namespace doesn't exist yet (read-only open fails) — first boot: migrate
+        Serial.println("NVS: first boot, migrating hostname/MQTT from settings.json");
+        saveNvs();
+        configSave();   // rewrite JSON without the migrated keys
+        return;
+    }
+    bool inited = p.isKey("init");
+    if (inited) {
+        p.getString("hostname",    g_config.hostname,   sizeof(g_config.hostname));
+        p.getString("mqtt_host",   g_config.mqttHost,   sizeof(g_config.mqttHost));
+        p.getString("mqtt_user",   g_config.mqttUser,   sizeof(g_config.mqttUser));
+        p.getString("mqtt_pass",   g_config.mqttPass,   sizeof(g_config.mqttPass));
+        p.getString("mqtt_prefix", g_config.mqttPrefix, sizeof(g_config.mqttPrefix));
+        g_config.mqttPort = p.getUShort("mqtt_port", 1883);
+    }
+    p.end();
+    if (!inited) {
+        Serial.println("NVS: first boot, migrating hostname/MQTT from settings.json");
+        saveNvs();
+        configSave();
+    }
+}
+
 void configSave() {
+    saveNvs();
+
     JsonDocument doc;
-
-    doc["hostname"] = g_config.hostname;
-
-    JsonObject mqtt    = doc["mqtt"].to<JsonObject>();
-    mqtt["host"]       = g_config.mqttHost;
-    mqtt["port"]       = g_config.mqttPort;
-    mqtt["user"]       = g_config.mqttUser;
-    mqtt["pass"]       = g_config.mqttPass;
-    mqtt["prefix"]     = g_config.mqttPrefix;
 
     JsonArray alarms = doc["alarms"].to<JsonArray>();
     for (int i = 0; i < NUM_FANS; i++) {
